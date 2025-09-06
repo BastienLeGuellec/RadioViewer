@@ -154,8 +154,168 @@ def draw_viewer_page():
     username = st.session_state.username
     st.title(f"Viewing Case: {selected_case}")
 
-    # Instructions
-    st.info("Use the sidebar for series navigation and to change slices. Enter your diagnosis below.")
+    # Instructions for diagnosis in main area
+    st.info("Enter your diagnosis below.")
+
+    if st.sidebar.button("⬅️ Back to Case Selection"):
+        log_action(username, "Back to Selection", case=selected_case)
+        st.session_state.page = "case_selection"
+        del st.session_state.selected_case
+        st.rerun()
+    
+    st.sidebar.title("Series Navigation")
+    series_list_raw = get_series_for_case(selected_case)
+    if not series_list_raw: 
+        st.warning(f"No series found for case '{selected_case}'."); return
+
+    # Prepend a "Please Select" option
+    series_options = ["-- Please Select a Series --"] + series_list_raw
+
+    # Determine initial index for selectbox
+    initial_series_index = 0 # Default to "Please Select"
+
+    # If a series was previously selected and is still valid, try to pre-select it
+    if 'last_selected_series' in st.session_state and st.session_state.last_selected_series in series_list_raw:
+        initial_series_index = series_list_raw.index(st.session_state.last_selected_series) + 1 # +1 because of "Please Select"
+
+    selected_series_from_selectbox = st.sidebar.selectbox(
+        "Select a Series",
+        series_options,
+        index=initial_series_index,
+        key="series_selectbox" # Add a key to prevent issues with dynamic options
+    )
+
+    # Determine the actual series to use for display
+    current_series = None
+    if selected_series_from_selectbox != "-- Please Select a Series --":
+        current_series = selected_series_from_selectbox
+
+    # Check if the user made a new valid selection via the selectbox
+    # Only log if a real series is selected AND it's different from the last logged one
+    if current_series and current_series != st.session_state.get('last_selected_series_logged', None):
+        log_action(username, "Select Series", case=selected_case, series=current_series)
+        st.session_state.last_selected_series_logged = current_series # Update logged state
+        st.session_state.last_selected_series = current_series # Update for image display
+        st.session_state.last_slice_index = 1 # Reset slice index when series changes
+        st.rerun() # Rerun to update image based on new series and reset slice
+    elif not current_series and 'last_selected_series_logged' in st.session_state: # If user switches back to "Please Select"
+        del st.session_state.last_selected_series_logged
+        if 'last_selected_series' in st.session_state: del st.session_state.last_selected_series
+        if 'last_slice_index' in st.session_state: del st.session_state.last_slice_index
+        st.rerun() # Rerun to clear image
+
+    # Only display image and controls if a series is actually selected
+    if current_series:
+        images = get_images_for_series(selected_case, current_series)
+        if not images: 
+            st.warning(f"No images found for series '{current_series}'."); return
+
+        # Ensure last_slice_index is initialized for the current series
+        if 'last_slice_index' not in st.session_state or st.session_state.last_slice_index > len(images):
+            st.session_state.last_slice_index = 1
+
+        # Slice navigation buttons in sidebar
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("Slice Navigation")
+        if st.sidebar.button("⬆️ Up", key="slice_up_sidebar"):
+            if st.session_state.get('last_slice_index', 1) > 1: # Go down in slice number
+                st.session_state.last_slice_index -= 1
+                log_action(username, "Change Slice", case=selected_case, series=current_series, details=f"Slice: {st.session_state.last_slice_index}")
+        
+        st.sidebar.write(f"Current Slice: {st.session_state.get('last_slice_index', 1)} / {len(images)}")
+
+        if st.sidebar.button("⬇️ Down", key="slice_down_sidebar"):
+            if st.session_state.get('last_slice_index', 1) < len(images): # Go up in slice number
+                st.session_state.last_slice_index += 1
+                log_action(username, "Change Slice", case=selected_case, series=current_series, details=f"Slice: {st.session_state.last_slice_index}")
+
+        # Image display
+        st.subheader(f"Viewing: {selected_case} / {current_series}")
+        # Image sizing: Display at a fixed width to maintain consistency
+        st.title(f"Viewing Case: {selected_case}")
+
+    # Instructions for diagnosis in main area
+    # Removed: st.info("Enter your diagnosis below.")
+
+    if st.sidebar.button("⬅️ Back to Case Selection"):
+        log_action(username, "Back to Selection", case=selected_case)
+        st.session_state.page = "case_selection"
+        del st.session_state.selected_case
+        st.rerun()
+    
+    st.sidebar.title("Series Navigation")
+    series_list_raw = get_series_for_case(selected_case)
+    if not series_list_raw: 
+        st.warning(f"No series found for case '{selected_case}'."); return
+
+    # Prepend a "Please Select" option
+    series_options = ["-- Please Select a Series --"] + series_list_raw
+
+    # Determine initial index for selectbox
+    initial_series_index = 0 # Default to "Please Select"
+
+    # If a series was previously selected and is still valid, try to pre-select it
+    if 'last_selected_series' in st.session_state and st.session_state.last_selected_series in series_list_raw:
+        initial_series_index = series_list_raw.index(st.session_state.last_selected_series) + 1 # +1 because of "Please Select"
+
+    selected_series_from_selectbox = st.sidebar.selectbox(
+        "Select a Series",
+        series_options,
+        index=initial_series_index,
+        key="series_selectbox" # Add a key to prevent issues with dynamic options
+    )
+
+    # Determine the actual series to use for display
+    current_series = None
+    if selected_series_from_selectbox != "-- Please Select a Series --":
+        current_series = selected_series_from_selectbox
+
+    # Check if the user made a new valid selection via the selectbox
+    # Only log if a real series is selected AND it's different from the last logged one
+    if current_series and current_series != st.session_state.get('last_selected_series_logged', None):
+        log_action(username, "Select Series", case=selected_case, series=current_series)
+        st.session_state.last_selected_series_logged = current_series # Update logged state
+        st.session_state.last_selected_series = current_series # Update for image display
+        st.session_state.last_slice_index = 1 # Reset slice index when series changes
+        st.rerun() # Rerun to update image based on new series and reset slice
+    elif not current_series and 'last_selected_series_logged' in st.session_state: # If user switches back to "Please Select"
+        del st.session_state.last_selected_series_logged
+        if 'last_selected_series' in st.session_state: del st.session_state.last_selected_series
+        if 'last_slice_index' in st.session_state: del st.session_state.last_slice_index
+        st.rerun() # Rerun to clear image
+
+    # Only display image and controls if a series is actually selected
+    if current_series:
+        images = get_images_for_series(selected_case, current_series)
+        if not images: 
+            st.warning(f"No images found for series '{current_series}'."); return
+
+        # Ensure last_slice_index is initialized for the current series
+        if 'last_slice_index' not in st.session_state or st.session_state.last_slice_index > len(images):
+            st.session_state.last_slice_index = 1
+
+        # Slice navigation buttons in sidebar
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("Slice Navigation")
+        if st.sidebar.button("⬆️ Up", key="slice_up_sidebar"):
+            if st.session_state.get('last_slice_index', 1) > 1: # Go down in slice number
+                st.session_state.last_slice_index -= 1
+                log_action(username, "Change Slice", case=selected_case, series=current_series, details=f"Slice: {st.session_state.last_slice_index}")
+        
+        st.sidebar.write(f"Current Slice: {st.session_state.get('last_slice_index', 1)} / {len(images)}")
+
+        if st.sidebar.button("⬇️ Down", key="slice_down_sidebar"):
+            if st.session_state.get('last_slice_index', 1) < len(images): # Go up in slice number
+                st.session_state.last_slice_index += 1
+                log_action(username, "Change Slice", case=selected_case, series=current_series, details=f"Slice: {st.session_state.last_slice_index}")
+
+        # Image display
+        st.subheader(f"Viewing: {selected_case} / {current_series}")
+        # Image sizing: Display at a fixed width to maintain consistency
+def draw_viewer_page():
+    selected_case = st.session_state.selected_case
+    username = st.session_state.username
+    st.title(f"Viewing Case: {selected_case}")
 
     if st.sidebar.button("⬅️ Back to Case Selection"):
         log_action(username, "Back to Selection", case=selected_case)
@@ -252,6 +412,31 @@ def draw_viewer_page():
             st.rerun()
     else:
         st.info("Please select a series from the sidebar to view images.")
+
+    # Instructions at the bottom of the sidebar
+    st.sidebar.markdown("---") # Separator
+    st.sidebar.subheader("Instructions")
+    st.sidebar.markdown("⬆️ Select a series from the dropdown above.")
+    st.sidebar.markdown("⬆️⬇️ Use the buttons to navigate slices.")
+
+    st.subheader("Diagnosis")
+    diagnoses = load_diagnoses()
+    user_diagnoses = diagnoses.get(username, {})
+    previous_diagnosis = user_diagnoses.get(selected_case, "")
+    diagnosis_text = st.text_area("Enter your diagnosis here:", value=previous_diagnosis, height=70) # Smaller height
+
+    if st.button("Save Diagnosis"):
+        if username not in diagnoses:
+            diagnoses[username] = {}
+        diagnoses[username][selected_case] = diagnosis_text
+        save_diagnoses(diagnoses)
+        log_action(username, "Save Diagnosis", case=selected_case, details=diagnosis_text)
+        st.success("Diagnosis saved!")
+        st.session_state.page = "case_selection"
+        del st.session_state.selected_case
+        st.rerun()
+
+
 
 # --- Main App Router ---
 
