@@ -3,60 +3,62 @@ from pathlib import Path
 import pandas as pd
 from datetime import datetime
 import json
-import gspread
-from google.oauth2.service_account import Credentials
-from gspread_dataframe import set_with_dataframe
+import os
 
 # --- Configuration ---
 DATA_DIR = Path("data")
+USERS_FILE = Path("users.xlsx")
 DIAGNOSES_FILE = Path("diagnoses.json")
+LOGS_DIR = Path("logs")
 st.set_page_config(layout="wide", page_title="Radiology Case Viewer")
 
-# --- Google Sheets Configuration ---
-# The following scopes are required to access the Google Sheet.
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive.file",
-]
-
-# Function to connect to Google Sheets
-def connect_to_gsheet():
-    try:
-        creds_json = st.secrets["gcp_service_account"]
-        creds = Credentials.from_service_account_info(creds_json, scopes=SCOPES)
-        client = gspread.authorize(creds)
-        return client
-    except Exception as e:
-        st.error(f"Error connecting to Google Sheets: {e}")
-        return None
+def initialize_admin_user():
+    """
+    Checks if the 'is_admin' column exists in the users file.
+    If not, it adds the column and sets the first user as an admin.
+    """
+    if USERS_FILE.exists():
+        users_df = pd.read_excel(USERS_FILE)
+        if 'is_admin' not in users_df.columns:
+            users_df['is_admin'] = False
+            users_df.loc[0, 'is_admin'] = True
+            users_df.to_excel(USERS_FILE, index=False)
 
 # --- Logging Function ---
 def log_action(username, action, case="", series="", details=""):
-    """Appends a log entry to the Google Sheet."""
+    """Appends a log entry to the specified Excel file."""
+    LOGS_DIR.mkdir(exist_ok=True)
+    log_file = LOGS_DIR / f"{username}_action_log.xlsx"
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    columns=['Timestamp', 'Username', 'Action', 'Case', 'Series', 'Details']
+    new_log_entry = pd.DataFrame([[timestamp, username, action, case, series, details]], columns=columns)
+    
     try:
-        client = connect_to_gsheet()
-        if client:
-            spreadsheet = client.open(st.secrets["gcp_service_account"]["gsheet_name"])
-            worksheet = spreadsheet.worksheet("action_log")
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            columns=['Timestamp', 'Username', 'Action', 'Case', 'Series', 'Details']
-            new_log_entry = pd.DataFrame([[timestamp, username, action, case, series, details]], columns=columns)
-            
-            # Get existing data
-            existing_data = worksheet.get_all_records()
-            existing_df = pd.DataFrame(existing_data)
+        if log_file.exists():
+            log_df = pd.read_excel(log_file)
+            # Ensure columns match, if not, create new file
+            if list(log_df.columns) != columns:
+                log_df = new_log_entry
+            else:
+                log_df = pd.concat([log_df, new_log_entry], ignore_index=True)
+        else:
+            log_df = new_log_entry
+        
+        log_df.to_excel(log_file, index=False)
 
-            # Append new data
-            updated_df = pd.concat([existing_df, new_log_entry], ignore_index=True)
-
-            # Clear sheet and write updated data
-            worksheet.clear()
-            set_with_dataframe(worksheet, updated_df)
     except Exception as e:
         st.sidebar.error(f"Log Error: {e}")
 
-
 # --- Data Loading Functions ---
+
+@st.cache_data
+def load_users():
+    """Loads user data from the excel file."""
+    if not USERS_FILE.exists():
+        st.error(f"User file not found at {USERS_FILE}")
+        return None
+    return pd.read_excel(USERS_FILE)
+
 def load_diagnoses():
     """Loads diagnoses from the JSON file."""
     if not DIAGNOSES_FILE.exists():
@@ -100,12 +102,13 @@ def get_images_for_series(case_name, series_name):
 
 def draw_login_page():
     st.title("Radiology Viewer Login")
-    
-    try:
-        users = st.secrets["users"]
-    except FileNotFoundError:
-        st.error("User credentials are not configured. Please set up your secrets in Streamlit Cloud.")
-        return
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.image("logo.png", use_column_width=True)
+
+    users_df = load_users()
+    if users_df is None: return
 
     with st.form("login_form"):
         username = st.text_input("Username")
@@ -113,19 +116,15 @@ def draw_login_page():
         submitted = st.form_submit_button("Login")
 
         if submitted:
-            user_found = False
-            for user in users:
-                if user["username"] == username and user["password"] == password:
-                    st.session_state.logged_in = True
-                    st.session_state.username = username
-                    st.session_state.is_admin = user.get("is_admin", False)
-                    st.session_state.page = "case_selection"
-                    log_action(username, "Login Success")
-                    user_found = True
-                    st.rerun()
-                    break
-            
-            if not user_found:
+            user_record = users_df[users_df['username'] == username]
+            if not user_record.empty and str(user_record.iloc[0]['password']) == password:
+                st.session_state.logged_in = True
+                st.session_state.username = username
+                st.session_state.is_admin = user_record.iloc[0].get('is_admin', False)
+                st.session_state.page = "case_selection"
+                log_action(username, "Login Success")
+                st.rerun()
+            else:
                 st.error("Invalid username or password")
                 if username: # Log failed attempt
                     log_action(username, "Login Fail")
@@ -157,34 +156,47 @@ def draw_case_selection_page():
         bg_color = "#28a745" if is_done else "#6c757d" # Green or Grey
         text_color = "white"
 
-        col_case_name, col_open_button = st.columns([0.7, 0.3])
+        col_case_name, col_open_button = st.columns([0.7, 0.3]) # Adjust ratios as needed
 
         with col_case_name:
             st.markdown(
-                f'''<div style="background-color:{bg_color}; padding:10px; border-radius:5px; color:{text_color}; height: 50px; display: flex; align-items: center;">'''
-                f'''<h3 style="margin:0;">{case}</h3>'''
-                f'''</div>''',
+                f'<div style="background-color:{bg_color}; padding:10px; border-radius:5px; color:{text_color}; height: 50px; display: flex; align-items: center;">'
+                f'<h3 style="margin:0;">{case}</h3>'
+                f'</div>',
                 unsafe_allow_html=True
             )
         with col_open_button:
-            st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True) # Spacer to align button
             if st.button("Open", key=f"open_{case}"):
                 log_action(st.session_state.username, "Open Case", case=case)
                 st.session_state.page = "viewer"
                 st.session_state.selected_case = case
-                if 'last_selected_series' in st.session_state: del st.session_state.last_selected_series
-                if 'last_slice_index' in st.session_state: del st.session_state.last_slice_index
+                st.session_state.series_progress = {}
                 st.rerun()
+
+def increment_slice(current_series, max_slice):
+    if st.session_state.series_progress[current_series] < max_slice:
+        st.session_state.series_progress[current_series] += 1
+        log_action(st.session_state.username, "Change Slice", case=st.session_state.selected_case, series=current_series, details=f"Slice: {st.session_state.series_progress[current_series]}")
+
+def decrement_slice(current_series):
+    if st.session_state.series_progress[current_series] > 1:
+        st.session_state.series_progress[current_series] -= 1
+        log_action(st.session_state.username, "Change Slice", case=st.session_state.selected_case, series=current_series, details=f"Slice: {st.session_state.series_progress[current_series]}")
 
 def draw_viewer_page():
     selected_case = st.session_state.selected_case
     username = st.session_state.username
     st.title(f"Viewing Case: {selected_case}")
 
+    if 'series_progress' not in st.session_state:
+        st.session_state.series_progress = {}
+
     if st.sidebar.button("⬅️ Back to Case Selection"):
         log_action(username, "Back to Selection", case=selected_case)
         st.session_state.page = "case_selection"
         del st.session_state.selected_case
+        del st.session_state.series_progress
         st.rerun()
     
     st.sidebar.title("Series Navigation")
@@ -193,10 +205,14 @@ def draw_viewer_page():
         st.warning(f"No series found for case '{selected_case}'."); return
 
     series_options = ["-- Please Select a Series --"] + series_list_raw
-    initial_series_index = 0
 
-    if 'last_selected_series' in st.session_state and st.session_state.last_selected_series in series_list_raw:
-        initial_series_index = series_list_raw.index(st.session_state.last_selected_series) + 1
+    if 'last_selected_series' not in st.session_state:
+        st.session_state.last_selected_series = None
+
+    try:
+        initial_series_index = series_options.index(st.session_state.last_selected_series)
+    except ValueError:
+        initial_series_index = 0
 
     selected_series_from_selectbox = st.sidebar.selectbox(
         "Select a Series",
@@ -209,16 +225,12 @@ def draw_viewer_page():
     if selected_series_from_selectbox != "-- Please Select a Series --":
         current_series = selected_series_from_selectbox
 
-    if current_series and current_series != st.session_state.get('last_selected_series_logged', None):
+    if current_series and current_series != st.session_state.last_selected_series:
         log_action(username, "Select Series", case=selected_case, series=current_series)
-        st.session_state.last_selected_series_logged = current_series
         st.session_state.last_selected_series = current_series
-        st.session_state.last_slice_index = 1
         st.rerun()
-    elif not current_series and 'last_selected_series_logged' in st.session_state:
-        del st.session_state.last_selected_series_logged
-        if 'last_selected_series' in st.session_state: del st.session_state.last_selected_series
-        if 'last_slice_index' in st.session_state: del st.session_state.last_slice_index
+    elif not current_series and st.session_state.last_selected_series:
+        st.session_state.last_selected_series = None
         st.rerun()
 
     if current_series:
@@ -226,25 +238,20 @@ def draw_viewer_page():
         if not images: 
             st.warning(f"No images found for series '{current_series}'."); return
 
-        if 'last_slice_index' not in st.session_state or st.session_state.last_slice_index > len(images):
-            st.session_state.last_slice_index = 1
+        if current_series not in st.session_state.series_progress:
+            st.session_state.series_progress[current_series] = 1
+
+        slice_index = st.session_state.series_progress[current_series]
 
         st.sidebar.markdown("---")
         st.sidebar.subheader("Slice Navigation")
-        if st.sidebar.button("⬆️ Up", key="slice_up_sidebar"):
-            if st.session_state.get('last_slice_index', 1) > 1:
-                st.session_state.last_slice_index -= 1
-                log_action(username, "Change Slice", case=selected_case, series=current_series, details=f"Slice: {st.session_state.last_slice_index}")
         
-        st.sidebar.write(f"Current Slice: {st.session_state.get('last_slice_index', 1)} / {len(images)}")
-
-        if st.sidebar.button("⬇️ Down", key="slice_down_sidebar"):
-            if st.session_state.get('last_slice_index', 1) < len(images):
-                st.session_state.last_slice_index += 1
-                log_action(username, "Change Slice", case=selected_case, series=current_series, details=f"Slice: {st.session_state.last_slice_index}")
+        st.sidebar.button("⬆️ Up", on_click=decrement_slice, args=(current_series,))
+        st.sidebar.write(f"Current Slice: {slice_index} / {len(images)}")
+        st.sidebar.button("⬇️ Down", on_click=increment_slice, args=(current_series, len(images)))
 
         st.subheader(f"Viewing: {selected_case} / {current_series}")
-        st.image(str(images[st.session_state.get('last_slice_index', 1) - 1]), width=800)
+        st.image(str(images[slice_index - 1]), width=800)
 
         st.subheader("Diagnosis")
         diagnoses = load_diagnoses()
@@ -261,9 +268,15 @@ def draw_viewer_page():
             st.success("Diagnosis saved!")
             st.session_state.page = "case_selection"
             del st.session_state.selected_case
+            del st.session_state.series_progress
             st.rerun()
     else:
         st.info("Please select a series from the sidebar to view images.")
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Instructions")
+    st.sidebar.markdown("⬆️ Select a series from the dropdown above.")
+    st.sidebar.markdown("⬆️⬇️ Use the buttons to navigate slices.")
 
 def draw_admin_page():
     st.title("Admin Page")
@@ -272,30 +285,27 @@ def draw_admin_page():
         st.session_state.page = "case_selection"
         st.rerun()
 
-    st.subheader("Action Log")
-    try:
-        client = connect_to_gsheet()
-        if client:
-            spreadsheet = client.open(st.secrets["gcp_service_account"]["gsheet_name"])
-            worksheet = spreadsheet.worksheet("action_log")
-            log_data = worksheet.get_all_records()
-            log_df = pd.DataFrame(log_data)
+    st.subheader("Action Logs")
+    log_files = [f for f in LOGS_DIR.iterdir() if f.name.endswith("_action_log.xlsx")]
+    if not log_files:
+        st.warning("No log files found.")
+    else:
+        log_filenames = [f.name for f in log_files]
+        selected_log = st.selectbox("Select a log file to view:", log_filenames)
+        if selected_log:
+            log_df = pd.read_excel(LOGS_DIR / selected_log)
             st.dataframe(log_df)
-    except Exception as e:
-        st.error(f"Could not read logs from Google Sheet: {e}")
 
     st.subheader("User List")
-    try:
-        users = st.secrets["users"]
-        users_df = pd.DataFrame(users)
-        # Do not display passwords
-        users_df = users_df[["username", "is_admin"]]
+    if USERS_FILE.exists():
+        users_df = pd.read_excel(USERS_FILE)
         st.dataframe(users_df)
-    except Exception as e:
-        st.error(f"Could not read users from secrets: {e}")
-
+    else:
+        st.warning("Users file not found.")
 
 # --- Main App Router ---
+
+initialize_admin_user()
 
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
