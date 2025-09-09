@@ -1,4 +1,6 @@
-# Radiology Case Viewer
+
+
+# <img src="https://raw.githubusercontent.com/BastienLeGuellec/RadioViewer/refs/heads/main/logo.png" align="left" height="150" width="150" > Radiology Case Viewer
 
 This is a Streamlit-based application for viewing radiology cases, navigating through slices, and entering diagnoses. It includes a login system, case selection dashboard, and logs user interactions and diagnoses to Excel and JSON files for later review.
 
